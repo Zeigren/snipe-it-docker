@@ -1,0 +1,99 @@
+version: "3.8" # https://docs.docker.com/compose/compose-file/compose-file-v3/
+services:
+  nginx:
+    image: nginx:alpine
+    # https://hub.docker.com/_/nginx
+    volumes:
+      - snipeit_public:/var/www/html/public
+    configs:
+      - source: snipeit_nginx.conf
+        target: /etc/nginx/templates/nginx.conf.template
+    networks:
+      - traefik
+      - snipeit
+    environment:
+      # Required by NGINX
+      - NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx
+      # https://nginx.org/en/docs/ngx_core_module.html#worker_processes
+      - NGINX_WORKER_PROCESSES=auto
+      # https://nginx.org/en/docs/ngx_core_module.html#worker_rlimit_nofile
+      - NGINX_WORKER_RLIMIT_NOFILE=65535
+      # https://nginx.org/en/docs/ngx_core_module.html#worker_connections
+      - NGINX_WORKER_CONNECTIONS=65535
+      # https://nginx.org/en/docs/http/ngx_http_core_module.html#keepalive_timeout
+      - NGINX_KEEPALIVE_TIMEOUT=60s
+      # https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size
+      - NGINX_CLIENT_MAX_BODY_SIZE=10m
+      # https://nginx.org/en/docs/http/ngx_http_core_module.html#client_body_timeout
+      - NGINX_CLIENT_BODY_TIMEOUT=30s
+      # https://nginx.org/en/docs/http/server_names.html
+      - NGINX_HOST=snipeit.yourdomain.test
+    deploy:
+      labels:
+        # Essential traefik labels https://doc.traefik.io/traefik/providers/docker/
+        - "traefik.enable=true"
+        - "traefik.http.routers.snipeit.entrypoints=websecure"
+        - "traefik.http.routers.snipeit.rule=Host(`snipeit.yourdomain.test`)"
+        - "traefik.http.services.snipeit.loadbalancer.server.port=80" # Port traefik needs to route traffic to
+        # Enable middlewares
+        - "traefik.http.routers.snipeit.middlewares=default_circuitbreaker@file,default_security_headers@file"
+
+  snipeit:
+    image: snipeit:latest # https://docs.docker.com/compose/compose-file/compose-file-v3/#image
+    # https://hub.docker.com/_/snipe_it
+    # https://github.com/snipe/snipe-it
+    # https://snipe-it.readme.io/docs
+    # https://github.com/snipe/snipe-it/blob/master/.env.docker
+    volumes: # https://docs.docker.com/compose/compose-file/compose-file-v3/#volumes
+      - snipeit:/var/www/html/storage
+      - snipeit_public:/var/www/html/public
+    secrets: # https://docs.docker.com/compose/compose-file/compose-file-v3/#secrets
+      - snipeit_sql_password
+    networks: # https://docs.docker.com/compose/compose-file/compose-file-v3/#networks
+      - snipeit
+    environment: # https://docs.docker.com/compose/compose-file/compose-file-v3/#environment
+      - DB_PASSWORD=DOCKER-SECRET->snipeit_sql_password
+      - APP_KEY=base64:ltgiPFoz00z6ixipGBbUR38ym8EZ0ALOCM4VB3hyjt8=
+      - APP_URL=https://snipeit.yourdomain.test
+      - POST_MAX_SIZE=10M
+      - UPLOAD_MAX_FILESIZE=10M
+    # command: # https://docs.docker.com/compose/compose-file/compose-file-v3/#command
+
+  mariadb:
+    image: mariadb:latest
+    # https://hub.docker.com/_/mariadb
+    volumes:
+      - snipeit_db:/var/lib/mysql
+    secrets:
+      - snipeit_sql_password
+    networks:
+      - snipeit
+    environment:
+      - MYSQL_ROOT_PASSWORD_FILE=/run/secrets/snipeit_sql_password
+      - MYSQL_PASSWORD_FILE=/run/secrets/snipeit_sql_password
+      - MYSQL_USER=snipeit
+      - MYSQL_DATABASE=snipeit
+
+  redis:
+    image: redis:alpine
+    # https://hub.docker.com/_/redis
+    networks:
+      - snipeit
+
+volumes: # https://docs.docker.com/compose/compose-file/compose-file-v3/#volume-configuration-reference
+  snipeit:
+  snipeit_db:
+  snipeit_public:
+
+configs: # https://docs.docker.com/compose/compose-file/compose-file-v3/#configs-configuration-reference
+  snipeit_nginx.conf:
+    external: true
+
+secrets: # https://docs.docker.com/compose/compose-file/compose-file-v3/#secrets-configuration-reference
+  snipeit_sql_password:
+    external: true
+
+networks: # https://docs.docker.com/compose/compose-file/compose-file-v3/#network-configuration-reference
+  snipeit:
+  traefik:
+    external: true
