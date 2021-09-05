@@ -1,0 +1,81 @@
+version: "3.8" # https://docs.docker.com/compose/compose-file/compose-file-v3/
+services:
+  caddy:
+    image: caddy:latest
+    # https://hub.docker.com/_/caddy
+    volumes:
+      - snipeit_public:/var/www/snipeit/public
+      - caddy_data:/data
+    networks:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    configs:
+      - source: snipe-it-caddyfile
+        target: /etc/caddy/Caddyfile
+    environment:
+      # https://caddyserver.com/docs/automatic-https#overview
+      - DOMAIN=snipeit.yourdomain.test
+
+  snipeit:
+    image: zeigren/snipe-it:latest # ghcr.io/zeigren/snipe-it-docker:latest
+    # https://hub.docker.com/r/zeigren/snipe-it
+    volumes: # https://docs.docker.com/compose/compose-file/compose-file-v3/#volumes
+      - snipeit:/var/www/snipeit/storage
+      - snipeit_public:/var/www/snipeit/public
+    secrets: # https://docs.docker.com/compose/compose-file/compose-file-v3/#secrets
+      - snipeit_sql_password
+      - snipeit_app_key
+    networks: # https://docs.docker.com/compose/compose-file/compose-file-v3/#networks
+      - web
+      - db
+      - redis
+    environment: # https://docs.docker.com/compose/compose-file/compose-file-v3/#environment
+      - DB_PASSWORD=DOCKER-SECRET->snipeit_sql_password
+      - APP_URL=https://snipeit.yourdomain.test
+      - COOKIE_DOMAIN=snipeit.yourdomain.test
+      # Run first without APP_KEY to have the container create one
+      # - APP_KEY=DOCKER-SECRET->snipeit_app_key
+
+  mariadb:
+    image: mariadb:latest
+    # https://hub.docker.com/_/mariadb
+    volumes:
+      - snipeit_db:/var/lib/mysql
+    secrets:
+      - snipeit_sql_password
+    networks:
+      - db
+    environment:
+      - MYSQL_ROOT_PASSWORD_FILE=/run/secrets/snipeit_sql_password
+      - MYSQL_PASSWORD_FILE=/run/secrets/snipeit_sql_password
+      - MYSQL_USER=snipeit
+      - MYSQL_DATABASE=snipeit
+
+  redis:
+    image: redis:alpine
+    # https://hub.docker.com/_/redis
+    networks:
+      - redis
+
+volumes: # https://docs.docker.com/compose/compose-file/compose-file-v3/#volume-configuration-reference
+  snipeit:
+  snipeit_db:
+  snipeit_public:
+  caddy_data:
+
+configs: # https://docs.docker.com/compose/compose-file/compose-file-v3/#configs-configuration-reference
+  snipe-it-caddyfile:
+    external: true
+
+secrets: # https://docs.docker.com/compose/compose-file/compose-file-v3/#secrets-configuration-reference
+  snipeit_sql_password:
+    external: true
+  snipeit_app_key:
+    external: true
+
+networks: # https://docs.docker.com/compose/compose-file/compose-file-v3/#network-configuration-reference
+  web:
+  db:
+  redis:

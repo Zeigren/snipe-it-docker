@@ -4,9 +4,6 @@ source /env_secrets_expand.sh
 
 set -e
 
-# https://github.com/snipe/snipe-it/blob/master/docker/docker-entrypoint.sh
-# https://github.com/snipe/snipe-it/blob/master/.env.docker
-
 # Generate new app key if none is provided
 if [ -z "$APP_KEY" ]; then
   echo "Please re-run this container with an environment variable APP_KEY"
@@ -15,21 +12,65 @@ if [ -z "$APP_KEY" ]; then
   exit
 fi
 
+# Check and fix folder permissions
+if [ $(whoami) = "www-data" ]; then
+  if [ $(stat -c '%u%g' ${SNIPE_IT_HOME}) != 8282 ]; then
+    echo "Please fix the permissions for ${SNIPE_IT_HOME}"
+    echo "Attach to the Snipe-IT container as root and run:"
+    echo "chown -R www-data:www-data ${SNIPE_IT_HOME}"
+    echo "You can check the README for more info"
+    exit
+  fi
+
+  if [ $(stat -c '%u%g' ${SNIPE_IT_HOME}/public) != 8282 ]; then
+    echo "Please fix the permissions for ${SNIPE_IT_HOME}/public"
+    echo "Attach to the Snipe-IT container as root and run:"
+    echo "chown -R www-data:www-data ${SNIPE_IT_HOME}/public"
+    echo "You can check the README for more info"
+    exit
+  fi
+
+  if [ $(stat -c '%u%g' ${SNIPE_IT_HOME}/storage) != 8282 ]; then
+    echo "Please fix the permissions for ${SNIPE_IT_HOME}/storage"
+    echo "Attach to the Snipe-IT container as root and run:"
+    echo "chown -R www-data:www-data ${SNIPE_IT_HOME}/storage"
+    echo "You can check the README for more info"
+    exit
+  fi
+fi
+
+# Copy over public static files
+cp -rf ${SNIPE_IT_HOME}/tmp_public/* ${SNIPE_IT_HOME}/public
+
+if [ $(stat -c '%a' ${SNIPE_IT_HOME}/public/uploads) != 755 ]; then
+  echo "Setting folder permissions for ${SNIPE_IT_HOME}/public/uploads"
+  chmod -R 755 ${SNIPE_IT_HOME}/public/uploads
+fi
+
+if [ $(stat -c '%a' ${SNIPE_IT_HOME}/storage) != 755 ]; then
+  echo "Setting folder permissions for ${SNIPE_IT_HOME}/storage"
+  chmod -R 755 ${SNIPE_IT_HOME}/storage
+fi
+
+# If the Oauth DB files are not present copy the vendor files over to the db migrations
+if [ ! -f "${SNIPE_IT_HOME}/database/migrations/*create_oauth*" ]; then
+  cp -a ${SNIPE_IT_HOME}/vendor/laravel/passport/database/migrations/* ${SNIPE_IT_HOME}/database/migrations/
+fi
+
+# Snipe-IT Configuration
+# https://snipe-it.readme.io/docs/configuration
+# https://github.com/snipe/snipe-it/blob/master/docker/docker-entrypoint.sh
+# https://github.com/snipe/snipe-it/blob/master/.env.docker
+# -------------------------------------------------------------------------------
+
 cat >"$SNIPE_IT_HOME/.env" <<EOF
-# --------------------------------------------
-# REQUIRED: DB SETUP
-# --------------------------------------------
-# MYSQL_DATABASE=${MYSQL_DATABASE:-snipeit}
-# MYSQL_USER=${MYSQL_USER:-snipeit}
-# MYSQL_PASSWORD=${MYSQL_PASSWORD:-CHANGEME}
-# MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-CHANGEME}
 # --------------------------------------------
 # REQUIRED: BASIC APP SETTINGS
 # --------------------------------------------
 APP_ENV=${APP_ENV:-production}
 APP_DEBUG=${APP_DEBUG:-false}
-APP_KEY=${APP_KEY:-base64:3ilviXqB9u6DX1NRcyWGJ+sjySF+H18CPDGb3+IVwMQ=}
-APP_URL=${APP_URL:-http://localhost:9000}
+APP_KEY=${APP_KEY}
+APP_URL=${APP_URL:-https://snipeit.yourdomain.test}
 APP_TIMEZONE=${APP_TIMEZONE:-'UTC'}
 APP_LOCALE=${APP_LOCALE:-en}
 MAX_RESULTS=${MAX_RESULTS:-500}
@@ -89,7 +130,7 @@ IMAGE_LIB=${IMAGE_LIB:-gd}
 # --------------------------------------------
 MAIL_BACKUP_NOTIFICATION_DRIVER=${MAIL_BACKUP_NOTIFICATION_DRIVER:-null}
 MAIL_BACKUP_NOTIFICATION_ADDRESS=${MAIL_BACKUP_NOTIFICATION_ADDRESS:-null}
-BACKUP_ENV=${BACKUP_ENV:-true}
+BACKUP_ENV=${BACKUP_ENV:-false}
 
 # --------------------------------------------
 # OPTIONAL: SESSION SETTINGS
@@ -98,7 +139,7 @@ SESSION_LIFETIME=${SESSION_LIFETIME:-12000}
 EXPIRE_ON_CLOSE=${EXPIRE_ON_CLOSE:-false}
 ENCRYPT=${ENCRYPT:-false}
 COOKIE_NAME=${COOKIE_NAME:-snipeit_session}
-COOKIE_DOMAIN=${COOKIE_DOMAIN:-null}
+COOKIE_DOMAIN=${COOKIE_DOMAIN:-snipeit.yourdomain.test}
 SECURE_COOKIES=${SECURE_COOKIES:-true}
 API_TOKEN_EXPIRATION_YEARS=${API_TOKEN_EXPIRATION_YEARS:-40}
 
@@ -115,8 +156,8 @@ ENABLE_HSTS=${ENABLE_HSTS:-false}
 # --------------------------------------------
 # OPTIONAL: CACHE SETTINGS
 # --------------------------------------------
-CACHE_DRIVER=${CACHE_DRIVER:-file}
-SESSION_DRIVER=${SESSION_DRIVER:-file}
+CACHE_DRIVER=${CACHE_DRIVER:-redis}
+SESSION_DRIVER=${SESSION_DRIVER:-redis}
 QUEUE_DRIVER=${QUEUE_DRIVER:-sync}
 CACHE_PREFIX=${CACHE_PREFIX:-snipeit}
 
@@ -172,56 +213,45 @@ LDAP_MEM_LIM=${LDAP_MEM_LIM:-500M}
 LDAP_TIME_LIM=${LDAP_TIME_LIM:-600}
 EOF
 
+# PHP Configuration
+# -------------------------------------------------------------------------------
+
+# https://github.com/php/php-src/blob/master/php.ini-production
+# https://www.php.net/manual/en/ini.list.php
 cat >"/usr/local/etc/php/php.ini" <<EOF
 post_max_size = ${POST_MAX_SIZE:-10M}
 upload_max_filesize = ${UPLOAD_MAX_FILESIZE:-10M}
 memory_limit = ${MEMORY_LIMIT:-1024M}
 expose_php = ${EXPOSE_PHP:-off}
-cgi.fix_pathinfo = ${CGIFIX_PATHINFO:-0}
-EOF
-
-cat >"/usr/local/etc/php/conf.d/opcache.ini" <<EOF
-opcache.memory_consumption=${OPCACHE_MEMORY_CONSUMPTION:-64}
-opcache.max_accelerated_files=${OPCACHE_MAX_ACCELERATED_FILES:-4000}
-opcache.revalidate_freq=${OPCACHE_REVALIDATE_FREQ:-60}
-opcache.fast_shutdown=${OPCACHE_FAST_SHUTDOWN:-1}
+opcache.memory_consumption=${OPCACHE_MEMORY_CONSUMPTION:-128}
+opcache.max_accelerated_files=${OPCACHE_MAX_ACCELERATED_FILES:-10000}
 opcache.enable_cli=${OPCACHE_ENABLE_CLI:-1}
 opcache.validate_timestamps=${OPCACHE_VALIDATE_TIMESTAMPS:-0}
 EOF
 
-# Set PHP-FPM conf
-sed -i "s/pm =.*/pm = ${FPM_PM:-dynamic}/" /usr/local/etc/php-fpm.d/www.conf
-sed -i "s/pm.max_children =.*/pm.max_children = ${FPM_MAX_CHILDREN:-5}/" /usr/local/etc/php-fpm.d/www.conf
-sed -i "s/pm.start_servers =.*/pm.start_servers = ${FPM_START_SERVERS:-2}/" /usr/local/etc/php-fpm.d/www.conf
-sed -i "s/pm.min_spare_servers =.*/pm.min_spare_servers = ${FPM_MIN_SPARE:-1}/" /usr/local/etc/php-fpm.d/www.conf
-sed -i "s/pm.max_spare_servers =.*/pm.max_spare_servers = ${FPM_MAX_SPARE:-3}/" /usr/local/etc/php-fpm.d/www.conf
+# https://www.php.net/manual/en/install.fpm.configuration.php
+sed -i "s/pm =.*/pm = ${FPM_PM:-ondemand}/" /usr/local/etc/php-fpm.d/www.conf
+sed -i "s/pm.max_children =.*/pm.max_children = ${FPM_MAX_CHILDREN:-10}/" /usr/local/etc/php-fpm.d/www.conf
+sed -i "s/pm.start_servers =.*/pm.start_servers = ${FPM_START_SERVERS:-3}/" /usr/local/etc/php-fpm.d/www.conf
+sed -i "s/pm.min_spare_servers =.*/pm.min_spare_servers = ${FPM_MIN_SPARE_SERVERS:-1}/" /usr/local/etc/php-fpm.d/www.conf
+sed -i "s/pm.max_spare_servers =.*/pm.max_spare_servers = ${FPM_MAX_SPARE_SERVERS:-2}/" /usr/local/etc/php-fpm.d/www.conf
+sed -i "s/;pm.max_requests =.*/pm.max_requests = ${FPM_MAX_REQUESTS:-500}/" /usr/local/etc/php-fpm.d/www.conf
+sed -i "s/;pm.process_idle_timeout =.*/pm.process_idle_timeout = ${FPM_PROCESS_IDLE_TIMEOUT:-10s}/" /usr/local/etc/php-fpm.d/www.conf
+
+# -------------------------------------------------------------------------------
 
 echo "Test connection to ${DB_HOST:-mariadb}"
 
-/wait-for.sh ${DB_HOST:-mariadb}:3306 -- echo 'Success!'
+/wait-for.sh ${DB_HOST:-mariadb}\:3306 -- echo 'Success!'
 
 echo "Give ${DB_HOST:-mariadb} a few seconds to warm up"
 
-sleep 5s
-
-export SNIPE_IT_VERSION="$(grep -Eo '[0-9.]+' ${SNIPE_IT_HOME}/version)"
-mkdir -p /var/www/snipeit
-curl -L -o /var/www/snipeit/snipeit.tar.gz https://github.com/snipe/snipe-it/archive/v$SNIPE_IT_VERSION.tar.gz
-tar --strip-components=1 -C /var/www/snipeit -xzf /var/www/snipeit/snipeit.tar.gz
-cp -rf /var/www/snipeit/public ${SNIPE_IT_HOME}
-rm -rf /var/www/snipeit
-
-chown -R www-data:www-data \
-  $SNIPE_IT_HOME/public/uploads \
-  $SNIPE_IT_HOME/storage
-
-# If the Oauth DB files are not present copy the vendor files over to the db migrations
-if [ ! -f "/var/www/html/database/migrations/*create_oauth*" ]; then
-  cp -a /var/www/html/vendor/laravel/passport/database/migrations/* /var/www/html/database/migrations/
-fi
+sleep ${DB_WAIT:-5}s
 
 php artisan migrate --force
 php artisan config:clear
+php artisan cache:clear
+php artisan view:clear
 php artisan config:cache
 
 exec "$@"
